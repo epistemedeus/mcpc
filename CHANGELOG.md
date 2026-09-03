@@ -9,12 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional x402 `evidencePin` on the fetch middleware: when set, mcpc will not sign a payment whose advertised scheme, network, payTo, asset, amount, or origin disagrees with a published pin (seller `/.well-known/x402`, OpenAPI `x-payment-info`, or a catalog that copies those fields). Omitted, selection is unchanged.
 - New [REFERENCE.md](docs/REFERENCE.md) with the full `--help` output of every mcpc command, generated from the CLI itself so it always matches the release.
 - `mcpc @session` and `server-discover` now show the description and website URL a server advertises about itself, right below its name.
 
 ### Fixed
 
 - `mcpc help tools/list` and other MCP method names now show the command's help instead of failing with "Unknown command" — they already worked as aliases everywhere else.
+- x402 payments now work against servers that only reveal a tool's price when it is called: the payment signed for such a challenge is attached to the retried call, which used to go out unpaid and return the payment-required result again. The signature stays scoped to the tools the server charges for, so calls to free tools never carry a payment.
+- Sessions no longer get stuck reconnecting forever after a server upgrades to MCP 2026-07-28: a reconnect replayed the stored session ID, which made the client skip protocol negotiation and the server reject every request. Stale session IDs are now dropped (2026-07-28 has no session resumption), and a session whose server no longer speaks its protocol version is marked expired with a hint to run `restart`.
+- Sessions no longer lose their saved OAuth refresh token when a server that does not rotate refresh tokens omits `refresh_token` from the refresh response. The bridge used to overwrite the stored token with nothing, so the session could not authenticate after the access token expired and required a new `mcpc login`.
+
+### Security
+
+- `mcpc login` no longer opens the authorization URL through `cmd.exe` on Windows. The URL comes from the authorization server, and `cmd.exe` treated `&`, `|`, `^` and `%VAR%` inside it as commands, so a malicious or compromised server could run arbitrary commands when you pressed Enter to open the browser (and even a benign URL was cut off at its first `&`). The browser is now launched without any shell on all platforms, and authorization URLs with a scheme other than `http:`/`https:` are refused.
 
 ## [0.6.0] - 2026-08-02
 

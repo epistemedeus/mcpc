@@ -2,7 +2,7 @@
  * x402 fetch middleware for MCP transport
  *
  * Wraps the fetch function used by StreamableHTTPClientTransport to:
- * 1. Reuse a cached payment signature across tool calls within a session
+ * 1. Reuse a cached payment signature across calls to paid tools within a session
  * 2. Sign a fresh payment on the first call (or after cache invalidation)
  * 3. Handle HTTP 402 responses by parsing PAYMENT-REQUIRED, signing, and retrying once
  *
@@ -20,14 +20,20 @@ import type { FetchLike, Tool } from '@modelcontextprotocol/client';
 import {
   signPayment,
   parsePaymentRequired,
-  selectAcceptEntry,
   DEFAULT_PAYMENT_EXPIRY_SECONDS,
   type SignerWallet,
   type PaymentRequiredAccept,
   type PaymentRequiredHeader,
   type SchemePreference,
 } from './signer.js';
+import {
+  mismatchAgainstPin,
+  selectAcceptMatchingPin,
+  type PaymentEvidencePin,
+} from './evidence.js';
 import { createLogger } from '../logger.js';
+
+export type { PaymentEvidencePin } from './evidence.js';
 
 const logger = createLogger('x402-middleware');
 
@@ -73,6 +79,23 @@ interface JsonRpcRequest {
 export interface X402PaymentCache {
   /** Base64-encoded payment signature, or null if not yet signed / invalidated */
   signature: string | null;
+
+  /**
+   * Names of tools the server has charged for at runtime, via a payment-required tool
+   * result or an HTTP 402. Challenge-first servers omit `_meta.x402` from `tools/list`,
+   * so this is the only record that such a tool is paid at all — without it the cached
+   * signature would have to be attached to every tools/call in the session (including
+   * free ones) for the retry after a challenge to carry payment.
+   */
+  paymentRequiredTools?: Set<string>;
+}
+
+/**
+ * Remember that the server charges for a tool, so later calls to it reuse the session's
+ * payment signature even when the tool advertises no `_meta.x402`.
+ */
+export function recordPaymentRequiredTool(cache: X402PaymentCache, toolName: string): void {
+  (cache.paymentRequiredTools ??= new Set<string>()).add(toolName);
 }
 
 /**
@@ -94,6 +117,14 @@ export interface X402FetchMiddlewareOptions {
 
   /** Payment scheme preference when multiple accepts are available (default: auto) */
   schemePreference?: SchemePreference;
+
+  /**
+   * Optional pin of the resource this session is willing to pay. When set, the
+   * middleware will not sign an accept (from `_meta.x402` or a 402 challenge)
+   * whose scheme, network, payTo, asset, amount, or origin/route disagrees.
+   * Omit to keep current behavior.
+   */
+  evidencePin?: PaymentEvidencePin;
 }
 
 /**
@@ -108,7 +139,7 @@ export function createX402FetchMiddleware(
   baseFetch: FetchLike,
   options: X402FetchMiddlewareOptions
 ): FetchLike {
-  const { wallet, getToolByName, paymentCache, schemePreference } = options;
+  const { wallet, getToolByName, paymentCache, schemePreference, evidencePin } = options;
 
   return async (url: string | URL, init?: RequestInit): Promise<Response> => {
     // Try to get a payment signature (cached or freshly signed) for tools/call requests
@@ -117,7 +148,8 @@ export function createX402FetchMiddleware(
       wallet,
       getToolByName,
       paymentCache,
-      schemePreference
+      schemePreference,
+      evidencePin
     );
     if (paymentSignature) {
       const enhancedInit = injectPayment(init, paymentSignature);
@@ -138,7 +170,8 @@ export function createX402FetchMiddleware(
         baseFetch,
         wallet,
         paymentCache,
-        schemePreference
+        schemePreference,
+        evidencePin
       );
     }
 
@@ -154,7 +187,8 @@ export function createX402FetchMiddleware(
         baseFetch,
         wallet,
         paymentCache,
-        schemePreference
+        schemePreference,
+        evidencePin
       );
     }
 
@@ -172,9 +206,10 @@ async function getOrSignPayment(
   wallet: SignerWallet,
   getToolByName: ((name: string) => Tool | undefined) | undefined,
   paymentCache: X402PaymentCache,
-  schemePreference?: SchemePreference
+  schemePreference?: SchemePreference,
+  evidencePin?: PaymentEvidencePin
 ): Promise<string | undefined> {
-  if (!getToolByName || !init?.body) {
+  if (!init?.body) {
     return undefined;
   }
 
@@ -189,27 +224,39 @@ async function getOrSignPayment(
     return undefined;
   }
 
-  // Look up tool metadata
-  const tool = getToolByName(toolName);
-  if (!tool) {
-    logger.debug(`Tool "${toolName}" not found in cache, skipping payment`);
+  // Look up tool metadata (absent on challenge-first servers, which advertise no price
+  // until the tool is called)
+  const tool = getToolByName?.(toolName);
+  if (getToolByName && !tool) {
+    logger.debug(`Tool "${toolName}" not found in cache, relying on runtime payment challenges`);
+  }
+  const x402 = (tool as { _meta?: { x402?: ToolPaymentMeta } } | undefined)?._meta?.x402;
+
+  // Only tools the server charges for get a payment. The signature is deliberately reused
+  // across calls (servers such as mcp.apify.com treat it as a prepaid token, see #247), so
+  // this check is what keeps it off free tools — the alternative, attaching it to every
+  // tools/call, would hand a live authorization to calls that never asked for one.
+  const advertisesPayment = !!x402?.paymentRequired;
+  const chargedBefore = paymentCache.paymentRequiredTools?.has(toolName) ?? false;
+  if (!advertisesPayment && !chargedBefore) {
     return undefined;
   }
 
-  // Check _meta.x402
-  const meta = (tool as { _meta?: { x402?: ToolPaymentMeta } })._meta;
-  const x402 = meta?.x402;
-  if (!x402 || !x402.paymentRequired) {
-    return undefined;
-  }
-
-  // Return cached signature if available
+  // Reuse the session's signature. The bridge stores one here after a payment-required
+  // CallToolResult, and the retry must find it even though the tool has no _meta.x402.
   if (paymentCache.signature) {
     logger.debug(`Using cached payment signature for tool "${toolName}"`);
     return paymentCache.signature;
   }
 
-  const accept = selectAcceptFromToolMeta(x402, schemePreference);
+  // Charged before, but the tool advertises no terms to sign from — defer to the challenge,
+  // which carries the authoritative ones (a payment-required result handled by the bridge,
+  // or an HTTP 402). Proactive signing still requires _meta.x402.
+  if (!x402 || !x402.paymentRequired) {
+    return undefined;
+  }
+
+  const accept = selectAcceptFromToolMeta(x402, schemePreference, evidencePin);
   if (!accept) {
     logger.debug(
       `Tool "${toolName}" _meta.x402 does not advertise a usable accept for schemePreference=${schemePreference ?? 'auto'}, deferring to 402 fallback`
@@ -241,7 +288,8 @@ async function handle402Fallback(
   baseFetch: FetchLike,
   wallet: SignerWallet,
   paymentCache: X402PaymentCache,
-  schemePreference?: SchemePreference
+  schemePreference?: SchemePreference,
+  evidencePin?: PaymentEvidencePin
 ): Promise<Response> {
   // Extract PAYMENT-REQUIRED header (case-insensitive)
   const paymentRequiredBase64 =
@@ -263,6 +311,23 @@ async function handle402Fallback(
     return response402;
   }
 
+  if (evidencePin) {
+    const pinned = selectAcceptMatchingPin(
+      header.accepts,
+      evidencePin,
+      schemePreference ?? 'auto',
+      header.resource
+    );
+    if (!pinned) {
+      const mismatch = mismatchAgainstPin(accept, evidencePin, header.resource);
+      logger.warn(
+        `402 PAYMENT-REQUIRED ${mismatch ?? 'accept'} does not match payment evidence pin; not signing`
+      );
+      return response402;
+    }
+    accept = pinned;
+  }
+
   // Sign the payment
   try {
     const result = await signPayment({
@@ -277,6 +342,13 @@ async function handle402Fallback(
 
     // Cache the freshly signed payment for subsequent calls
     paymentCache.signature = result.paymentSignatureBase64;
+
+    // A 402 on a tools/call proves the server charges for that tool, even if it advertises
+    // no _meta.x402, so later calls to it can reuse this signature
+    const toolName = extractToolCallName(originalInit?.body);
+    if (toolName) {
+      recordPaymentRequiredTool(paymentCache, toolName);
+    }
 
     // Retry with payment signature (once only)
     const retryInit = injectPayment(originalInit, result.paymentSignatureBase64);
@@ -331,12 +403,13 @@ function extractToolCallName(body: RequestInit['body'] | undefined): string | un
  */
 function selectAcceptFromToolMeta(
   x402: ToolPaymentMeta,
-  schemePreference?: SchemePreference
+  schemePreference?: SchemePreference,
+  evidencePin?: PaymentEvidencePin
 ): PaymentRequiredAccept | undefined {
   const preference = schemePreference ?? 'auto';
 
   if (Array.isArray(x402.accepts) && x402.accepts.length > 0) {
-    return selectAcceptEntry(x402.accepts, preference);
+    return selectAcceptMatchingPin(x402.accepts, evidencePin, preference);
   }
 
   if (!x402.scheme || !x402.network || !x402.amount || !x402.asset || !x402.payTo) {
@@ -346,7 +419,7 @@ function selectAcceptFromToolMeta(
     return undefined;
   }
 
-  return {
+  const accept: PaymentRequiredAccept = {
     scheme: x402.scheme,
     network: x402.network,
     amount: x402.amount,
@@ -355,6 +428,11 @@ function selectAcceptFromToolMeta(
     maxTimeoutSeconds: x402.maxTimeoutSeconds || DEFAULT_PAYMENT_EXPIRY_SECONDS,
     ...(x402.extra && { extra: x402.extra }),
   };
+
+  if (evidencePin && mismatchAgainstPin(accept, evidencePin)) {
+    return undefined;
+  }
+  return accept;
 }
 
 /**
@@ -365,7 +443,8 @@ function selectAcceptFromToolMeta(
  */
 export function extractAcceptFromPaymentRequired(
   data: unknown,
-  schemePreference?: SchemePreference
+  schemePreference?: SchemePreference,
+  evidencePin?: PaymentEvidencePin
 ):
   | {
       accept: PaymentRequiredAccept;
@@ -377,16 +456,19 @@ export function extractAcceptFromPaymentRequired(
   const obj = data as Record<string, unknown>;
   if (!Array.isArray(obj.accepts) || obj.accepts.length === 0) return undefined;
 
-  const accept = selectAcceptEntry(
+  const resource = obj.resource as
+    { url?: string; description?: string; mimeType?: string } | undefined;
+
+  const accept = selectAcceptMatchingPin(
     obj.accepts as PaymentRequiredAccept[],
-    schemePreference ?? 'auto'
+    evidencePin,
+    schemePreference ?? 'auto',
+    resource
   );
   if (!accept) {
     return undefined;
   }
 
-  const resource = obj.resource as
-    { url?: string; description?: string; mimeType?: string } | undefined;
   if (resource) {
     return { accept, resource };
   }
