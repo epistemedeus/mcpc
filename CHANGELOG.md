@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional x402 `evidencePin` on the fetch middleware: when set, mcpc will not sign a payment whose advertised scheme, network, payTo, asset, amount, or origin disagrees with a published pin (seller `/.well-known/x402`, OpenAPI `x-payment-info`, or a catalog that copies those fields). Omitted, selection is unchanged.
 - New [REFERENCE.md](docs/REFERENCE.md) with the full `--help` output of every mcpc command, generated from the CLI itself so it always matches the release.
 - `mcpc @session` and `server-discover` now show the description and website URL a server advertises about itself, right below its name.
 

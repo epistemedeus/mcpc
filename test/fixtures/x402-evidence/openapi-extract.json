@@ -1,0 +1,54 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SameDayDesk machine commerce gateway",
+    "version": "1.23.40"
+  },
+  "paths": {
+    "/extract": {
+      "get": {
+        "operationId": "extractUrl",
+        "x-payment-info": {
+          "price": {
+            "amount": "0.005",
+            "currency": "USD",
+            "mode": "fixed"
+          },
+          "protocols": [
+            {
+              "x402": {
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "network": "eip155:8453",
+                "scheme": "exact"
+              }
+            },
+            {
+              "mpp": {
+                "currency": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                "intent": "charge",
+                "method": "evm",
+                "network": "eip155:8453"
+              }
+            }
+          ]
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "url",
+                    "title"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

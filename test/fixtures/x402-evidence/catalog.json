@@ -1,0 +1,90 @@
+{
+  "route": {
+    "origin": "https://agents.samedaydesk.com",
+    "method": "GET",
+    "path": "/extract",
+    "exampleQuery": {
+      "url": "https://example.com"
+    },
+    "exampleUrl": "https://agents.samedaydesk.com/extract?url=https://example.com",
+    "operationId": "extractUrl",
+    "product": "extract",
+    "mcpPriceUsd": "0.005"
+  },
+  "contract": {
+    "x402Version": 2,
+    "scheme": "exact",
+    "network": "eip155:8453",
+    "payTo": "0x8904dF3DE6DFEe6a7C8cc38619d2f17806213Cee",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "amount": "5000",
+    "maxAmountRequired": "5000",
+    "priceUsd": 0.005,
+    "decimals": 6,
+    "maxTimeoutSeconds": 300,
+    "extra": {
+      "name": "USD Coin",
+      "version": "2"
+    },
+    "resourceMimeType": "application/json",
+    "serviceName": "SameDayDesk",
+    "outputGuaranteedPaths": [
+      "ok",
+      "title",
+      "url"
+    ],
+    "bazaarOutputExampleKeys": [
+      "ok",
+      "url",
+      "title",
+      "description",
+      "jsonLd",
+      "aiReadiness"
+    ],
+    "extensionKeys": [
+      "bazaar",
+      "builder-code",
+      "offer-receipt",
+      "payment-identifier"
+    ]
+  },
+  "volatileOmitted": [
+    "extensions.offer-receipt.info.offers[].payload.validUntil",
+    "extensions.offer-receipt.info.offers[].signature",
+    "WWW-Authenticate expires/opaque",
+    "PAYMENT-REQUIRED header encoding of those volatile fields"
+  ],
+  "definitions": {
+    "mcp": {
+      "path": "client/src/pages/Mcp.tsx",
+      "note": "Apex SPA catalog projection of the 22 canonical paid products. Price for extract is $0.005. This repository's Express process does not host the paid gateway."
+    },
+    "openapi": {
+      "url": "https://agents.samedaydesk.com/openapi.json",
+      "infoVersion": "1.23.40",
+      "operationId": "extractUrl",
+      "x-payment-info": {
+        "price": {
+          "amount": "0.005",
+          "currency": "USD",
+          "mode": "fixed"
+        },
+        "protocols": [
+          {
+            "x402": {
+              "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              "network": "eip155:8453",
+              "scheme": "exact"
+            }
+          }
+        ]
+      },
+      "provenance": "observed-locally"
+    },
+    "wellKnownX402": {
+      "url": "https://agents.samedaydesk.com/.well-known/x402",
+      "routeTemplate": "/extract",
+      "provenance": "observed-locally"
+    }
+  }
+}
