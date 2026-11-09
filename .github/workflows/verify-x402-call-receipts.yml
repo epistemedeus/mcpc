@@ -22,7 +22,7 @@ jobs:
       - name: Load pinned patch and inert replay
         env:
           GH_TOKEN: ${{ github.token }}
-          PATCH_BLOB: a1837021773e93a96d0e4f086833d88930d9ab23
+          PATCH_BLOB: 5f486f6dde1a8b400d5c30343019592953213c49
           REPLAY_BLOB: 25debfe63a3bb87d3d7137847d163439e8a3a6ef
         run: |
           gh api "repos/$GITHUB_REPOSITORY/git/blobs/$PATCH_BLOB" --jq .content | base64 --decode > "$RUNNER_TEMP/candidate.patch"
