@@ -1,0 +1,50 @@
+name: Verify x402 call receipt isolation
+
+on:
+  push:
+    branches: [codex/verify-x402-call-receipts]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: apify/actions/pnpm-install@v1.1.2
+      - name: Load pinned patch and inert replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH_BLOB: a1837021773e93a96d0e4f086833d88930d9ab23
+          REPLAY_BLOB: 25debfe63a3bb87d3d7137847d163439e8a3a6ef
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/blobs/$PATCH_BLOB" --jq .content | base64 --decode > "$RUNNER_TEMP/candidate.patch"
+          gh api "repos/$GITHUB_REPOSITORY/git/blobs/$REPLAY_BLOB" --jq .content | base64 --decode > "$RUNNER_TEMP/replay.mjs"
+          git apply --check "$RUNNER_TEMP/candidate.patch"
+      - name: Require the real failure on the base
+        run: |
+          pnpm run build
+          if node "$RUNNER_TEMP/replay.mjs" --built > "$RUNNER_TEMP/base.log" 2>&1; then
+            cat "$RUNNER_TEMP/base.log"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/base.log"
+          grep -F 'AssertionError [ERR_ASSERTION]: receipt references stay with their own results' "$RUNNER_TEMP/base.log"
+      - name: Lint, build, test and replay the candidate
+        run: |
+          git apply "$RUNNER_TEMP/candidate.patch"
+          if ! pnpm run lint; then
+            pnpm exec prettier --write src/bridge/index.ts src/lib/x402/fetch-middleware.ts test/unit/lib/x402/fetch-middleware.test.ts
+            git diff -- src test
+            exit 1
+          fi
+          pnpm run build
+          pnpm run test:unit
+          node "$RUNNER_TEMP/replay.mjs" --built
